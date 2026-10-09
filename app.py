@@ -1,23 +1,17 @@
 import hashlib
 import hmac
 import io
-import secrets
-import smtplib
 import sqlite3
-import time
 from datetime import datetime, timedelta, timezone
-from email.message import EmailMessage
 
 import pandas as pd
 import qrcode
 import streamlit as st
 
 JST = timezone(timedelta(hours=9))
-OTP_TTL = 600  # 秒
-MAX_ATTEMPTS = 5
 
 S = st.secrets
-DB_PATH = "attendance.db"  # 試作用。本番は Supabase / Google Sheets などに置き換え
+DB_PATH = "attendance.db"
 
 
 # ---------- DB ----------
@@ -67,62 +61,27 @@ def make_qr(url):
     return buf.getvalue()
 
 
-# ---------- メール認証 ----------
-def send_otp(email, code):
-    msg = EmailMessage()
-    msg["Subject"] = "入退室記録の認証コード"
-    msg["From"] = S["FROM_ADDR"]
-    msg["To"] = email
-    msg.set_content(f"認証コード: {code}\n有効期限は {OTP_TTL // 60} 分です。")
-    with smtplib.SMTP(S["SMTP_HOST"], int(S["SMTP_PORT"])) as smtp:
-        smtp.starttls()
-        smtp.login(S["SMTP_USER"], S["SMTP_PASSWORD"])
-        smtp.send_message(msg)
-
-
-def hash_code(code, email):
-    return hashlib.sha256(f"{code}:{email}:{S['ROOM_SECRET']}".encode()).hexdigest()
-
-
+# ---------- ドメインチェックのみの簡易ログイン ----------
 def email_allowed(email):
     domain = S.get("ALLOWED_DOMAIN", "")
     return "@" in email and (not domain or email.lower().endswith("@" + domain))
 
 
 def login_ui():
-    """認証済みならメールアドレスを返す。未認証なら入力UIを出して None。"""
+    """メールアドレスを入力したら即ログイン状態にする"""
     if st.session_state.get("auth_email"):
         return st.session_state["auth_email"]
 
-    email = st.text_input("メールアドレス").strip().lower()
-    if st.button("認証コードを送信"):
-        if not email_allowed(email):
+    email = st.text_input("メールアドレスを入力してください").strip().lower()
+    
+    if st.button("ログイン"):
+        if not email:
+            st.error("メールアドレスを入力してください。")
+        elif not email_allowed(email):
             st.error(f"@{S.get('ALLOWED_DOMAIN', '')} のアドレスを入力してください。")
         else:
-            code = f"{secrets.randbelow(10**6):06d}"
-            send_otp(email, code)
-            st.session_state["otp"] = {
-                "email": email,
-                "hash": hash_code(code, email),
-                "exp": time.time() + OTP_TTL,
-                "tries": 0,
-            }
-            st.success("コードを送信しました。メールを確認してください。")
-
-    otp = st.session_state.get("otp")
-    if otp:
-        code_in = st.text_input("6桁のコード", max_chars=6)
-        if st.button("確認"):
-            otp["tries"] += 1
-            if time.time() > otp["exp"] or otp["tries"] > MAX_ATTEMPTS:
-                st.session_state.pop("otp")
-                st.error("コードが無効です。最初からやり直してください。")
-            elif hmac.compare_digest(hash_code(code_in, otp["email"]), otp["hash"]):
-                st.session_state["auth_email"] = otp["email"]
-                st.session_state.pop("otp")
-                st.rerun()
-            else:
-                st.error("コードが違います。")
+            st.session_state["auth_email"] = email
+            st.rerun()
     return None
 
 
@@ -140,6 +99,10 @@ if room:
     email = login_ui()
     if email:
         st.write(f"ログイン中: {email}")
+        if st.button("ログアウト", type="secondary"):
+            st.session_state.pop("auth_email", None)
+            st.rerun()
+            
         nxt = "退室" if last_action(email, room) == "入室" else "入室"
         if st.button(f"{nxt}を記録する", type="primary"):
             action, ts = record(email, room)
@@ -152,6 +115,11 @@ else:
         if email not in [a.lower() for a in S["ADMIN_EMAILS"]]:
             st.error("管理者ではありません。")
             st.stop()
+            
+        if st.button("ログアウト"):
+            st.session_state.pop("auth_email", None)
+            st.rerun()
+            
         new_room = st.text_input("教室名(例: A101)")
         if new_room:
             url = room_url(new_room)
