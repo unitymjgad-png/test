@@ -28,13 +28,13 @@ def db():
 def last_action(email, room):
     with db() as con:
         row = con.execute(
-            "SELECT action FROM logs WHERE email=? AND room=? ORDER BY id DESC LIMIT 1",
+            "SELECT action, ts FROM logs WHERE email=? AND room=? ORDER BY id DESC LIMIT 1",
             (email, room),
         ).fetchone()
-    return row[0] if row else None
+    # 💡 状態(入室/退室)と時間を返す
+    return {"action": row[0], "ts": row[1]} if row else None
 
 
-# 💡 修正: action ("入室" または "退室") を引数で受け取るように変更
 def record(email, room, action):
     ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
     with db() as con:
@@ -105,18 +105,28 @@ if room:
             
         st.write("---")
         
-        # 💡 修正: 2つのボタンをカラムで横並びに配置
+        # 💡 現在のステータスを表示
+        last = last_action(email, room)
+        if last:
+            st.info(f"現在の状態: **{last['action']}中** (最終記録: {last['ts']})")
+        else:
+            st.info("過去の入退室記録はありません。")
+
+        # 💡 ボタンを別々に配置し、クリック時の処理をコールバック等に頼らず安全に実行
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🚪 入室を記録する", type="primary", use_container_width=True):
+            if st.button("🚪 入室する", type="primary", use_container_width=True):
                 action, ts = record(email, room, "入室")
-                st.success(f"{action}を記録しました({ts})")
+                st.success(f"【入室】を記録しました ({ts})")
+                st.rerun()  # 画面を更新して「現在の状態」に反映
                 
         with col2:
-            if st.button("🏃 退室を記録する", type="secondary", use_container_width=True):
+            # 入室していない状態でも押し忘れた時のために押せるように設定
+            if st.button("🏃 退室する", type="secondary", use_container_width=True):
                 action, ts = record(email, room, "退室")
-                st.success(f"{action}を記録しました({ts})")
+                st.success(f"【退室】を記録しました ({ts})")
+                st.rerun()  # 画面を更新して「現在の状態」に反映
 else:
     # 管理者用
     st.title("管理画面")
