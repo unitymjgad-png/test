@@ -34,8 +34,8 @@ def last_action(email, room):
     return row[0] if row else None
 
 
-def record(email, room):
-    action = "退室" if last_action(email, room) == "入室" else "入室"
+# 💡 修正: action ("入室" または "退室") を引数で受け取るように変更
+def record(email, room, action):
     ts = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
     with db() as con:
         con.execute(
@@ -103,10 +103,20 @@ if room:
             st.session_state.pop("auth_email", None)
             st.rerun()
             
-        nxt = "退室" if last_action(email, room) == "入室" else "入室"
-        if st.button(f"{nxt}を記録する", type="primary"):
-            action, ts = record(email, room)
-            st.success(f"{action}を記録しました({ts})")
+        st.write("---")
+        
+        # 💡 修正: 2つのボタンをカラムで横並びに配置
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🚪 入室を記録する", type="primary", use_container_width=True):
+                action, ts = record(email, room, "入室")
+                st.success(f"{action}を記録しました({ts})")
+                
+        with col2:
+            if st.button("🏃 退室を記録する", type="secondary", use_container_width=True):
+                action, ts = record(email, room, "退室")
+                st.success(f"{action}を記録しました({ts})")
 else:
     # 管理者用
     st.title("管理画面")
