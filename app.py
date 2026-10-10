@@ -1,11 +1,7 @@
-import hashlib
-import hmac
-import io
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
-import qrcode
 import streamlit as st
 
 JST = timezone(timedelta(hours=9))
@@ -31,7 +27,6 @@ def last_action(email, room):
             "SELECT action, ts FROM logs WHERE email=? AND room=? ORDER BY id DESC LIMIT 1",
             (email, room),
         ).fetchone()
-    # 💡 状態(入室/退室)と時間を返す
     return {"action": row[0], "ts": row[1]} if row else None
 
 
@@ -43,22 +38,6 @@ def record(email, room, action):
             (email, room, action, ts),
         )
     return action, ts
-
-
-# ---------- QR / token ----------
-def room_token(room):
-    return hmac.new(S["ROOM_SECRET"].encode(), room.encode(), hashlib.sha256).hexdigest()[:16]
-
-
-def room_url(room):
-    return f"{S['BASE_URL']}/?room={room}&t={room_token(room)}"
-
-
-def make_qr(url):
-    img = qrcode.make(url)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 # ---------- ドメインチェックのみの簡易ログイン ----------
@@ -85,70 +64,59 @@ def login_ui():
     return None
 
 
-# ---------- 画面 ----------
-st.set_page_config(page_title="教室 入退室記録", page_icon="🏫")
-params = st.query_params
-room = params.get("room")
+# ---------- 画面表示 ----------
+st.set_page_config(page_title="教室 入退室記録システム", page_icon="🏫")
+st.title("🏫 教室 入退室記録")
 
-if room:
-    # 学生用: QR から来た場合
-    st.title(f"🏫 {room}")
-    if not hmac.compare_digest(params.get("t", ""), room_token(room)):
-        st.error("QRコードが無効です。")
-        st.stop()
-    email = login_ui()
-    if email:
-        st.write(f"ログイン中: {email}")
-        if st.button("ログアウト", type="secondary"):
-            st.session_state.pop("auth_email", None)
-            st.rerun()
-            
-        st.write("---")
+# 1. まずはログイン
+email = login_ui()
+
+if email:
+    st.write(f"👤 ログイン中: {email}")
+    if st.button("ログアウト", type="secondary"):
+        st.session_state.pop("auth_email", None)
+        st.rerun()
         
-        # 💡 現在のステータスを表示
+    st.write("---")
+    
+    # 2. 記録対象の教室を入力・または選択
+    # （よく使う教室が決まっている場合は、st.selectbox(["120", "A101"], index=0) に変更も可能です）
+    room = st.text_input("教室名を入力してください (例: 120, A101)").strip()
+    
+    if room:
+        # 現在のステータスを表示
         last = last_action(email, room)
         if last:
-            st.info(f"現在の状態: **{last['action']}中** (最終記録: {last['ts']})")
+            st.info(f"💡 現在のステータス: **{last['action']}中** (最終記録: {last['ts']})")
         else:
-            st.info("過去の入退室記録はありません。")
+            st.info("💡 この教室の過去の入退室記録はありません。")
 
-        # 💡 ボタンを別々に配置し、クリック時の処理をコールバック等に頼らず安全に実行
+        # 3. 「入室」「退室」ボタンを横並びで配置
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🚪 入室する", type="primary", use_container_width=True):
+            if st.button("🚪 入室を記録する", type="primary", use_container_width=True):
                 action, ts = record(email, room, "入室")
                 st.success(f"【入室】を記録しました ({ts})")
-                st.rerun()  # 画面を更新して「現在の状態」に反映
+                st.rerun()
                 
         with col2:
-            # 入室していない状態でも押し忘れた時のために押せるように設定
-            if st.button("🏃 退室する", type="secondary", use_container_width=True):
+            if st.button("🏃 退室を記録する", type="secondary", use_container_width=True):
                 action, ts = record(email, room, "退室")
                 st.success(f"【退室】を記録しました ({ts})")
-                st.rerun()  # 画面を更新して「現在の状態」に反映
-else:
-    # 管理者用
-    st.title("管理画面")
-    email = login_ui()
-    if email:
-        if email not in [a.lower() for a in S["ADMIN_EMAILS"]]:
-            st.error("管理者ではありません。")
-            st.stop()
-            
-        if st.button("ログアウト"):
-            st.session_state.pop("auth_email", None)
-            st.rerun()
-            
-        new_room = st.text_input("教室名(例: A101)")
-        if new_room:
-            url = room_url(new_room)
-            st.code(url)
-            png = make_qr(url)
-            st.image(png, width=240)
-            st.download_button("QRコードをダウンロード", png, f"{new_room}.png", "image/png")
-        st.subheader("記録")
-        with db() as con:
-            df = pd.read_sql("SELECT * FROM logs ORDER BY id DESC", con)
-        st.dataframe(df, use_container_width=True)
-        st.download_button("CSVダウンロード", df.to_csv(index=False).encode("utf-8-sig"), "logs.csv")
+                st.rerun()
+
+    st.write("---")
+    
+    # 4. 画面の下部に全員の全記録ログを表示（誰でも確認・CSVダウンロード可能）
+    st.subheader("📊 全体の入退室記録一覧")
+    with db() as con:
+        df = pd.read_sql("SELECT id, email, room, action, ts FROM logs ORDER BY id DESC", con)
+    
+    st.dataframe(df, use_container_width=True)
+    st.download_button(
+        "CSVとしてダウンロード", 
+        df.to_csv(index=False).encode("utf-8-sig"), 
+        "attendance_logs.csv",
+        "text/csv"
+    )
